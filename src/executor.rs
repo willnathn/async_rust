@@ -1,11 +1,19 @@
 // so we need to use UringRing in order to actually execute something. We will start with just one
 // ring.
 
-mod ring;
-mod uring;
-use std::{io::Error, task::Waker};
+use crate::uring::{io_uring_cqe, io_uring_sqe, UringError, UringRing};
+use std::cell::RefCell;
+use std::task::Waker;
 
-use uring::{Result, UringError, UringRing, io_uring_cqe, io_uring_sqe};
+#[thread_local]
+static mut LOCAL_EX: *mut Executor = std::ptr::null_mut();
+
+pub unsafe fn get_local_executor() -> &'static mut Executor {
+    if LOCAL_EX.is_null() {
+        LOCAL_EX = Box::leak(Box::new(Executor::new().unwrap()));
+    }
+    return &mut *LOCAL_EX;
+}
 
 // this is just the size of the ring buffer.
 const MAX_CONCURRENT_SQES: u32 = 1024;
@@ -16,33 +24,34 @@ pub struct UringJob {
     waker: Option<Waker>,
 }
 
+#[derive(Debug)]
 pub struct Executor {
-    uring: uring::UringRing,
+    uring: UringRing,
     // we just need the wakers here
     head: u32,
     pending: [Option<Waker>; MAX_CONCURRENT_SQES as usize],
     // store the results here
-    results: [Option<u32>; MAX_CONCURRENT_SQES as usize],
+    results: [Option<i32>; MAX_CONCURRENT_SQES as usize],
 }
 
 impl Executor {
     pub fn new() -> Result<Self, UringError> {
-        Executor {
+        Ok(Executor {
             head: 0,
             results: [None; MAX_CONCURRENT_SQES as usize],
-            pending: [None; MAX_CONCURRENT_SQES as usize],
-            uring: UringRing::new(MAX_CONCURRENT_SQES),
-        }
+            pending: [const { None }; MAX_CONCURRENT_SQES as usize],
+            uring: UringRing::new(MAX_CONCURRENT_SQES)?,
+        })
     }
 }
 
 impl Executor {
     // ensure we mark the io_uring_sqe user data to be the id in the array (which should be a ring
     // buffer
-    pub fn enqueue_sqe(&mut self, sqe: io_uring_sqe, waker: Waker) -> Result<u32, UringError> {
+    pub fn enqueue_sqe(&mut self, mut sqe: io_uring_sqe, waker: Waker) -> Result<u32, UringError> {
         let head = self.head;
         self.head = (head + 1) & (MAX_CONCURRENT_SQES - 1);
-        sqe.user_data = head;
+        sqe.user_data.u64_ = head as u64;
         self.pending[head as usize] = Some(waker);
         self.uring.enqueue_sqe(sqe)?;
         Ok(head)
@@ -50,13 +59,13 @@ impl Executor {
     // here we will want to get the cqes, extract the user data to find the queued task and then
     // handle them by marking ready for next round.
     pub fn get_completions(&mut self) -> Result<(), UringError> {
-        let cqes = self.uring.get_cqe_batch();
+        let cqes = self.uring.get_cqe_batch()?;
         for cqe in cqes {
-            let index = cqe.user_data;
+            let index = unsafe { cqe.user_data.u64_ } as usize;
             // if none we raise an error here
-            let waker = self.pending[index];
+            let waker = self.pending[index].take().unwrap();
             self.pending[index] = None;
-            self.results[index] = cqe.user_data;
+            self.results[index] = Some(cqe.res);
             // tell thread it can poll
             waker.wake();
         }
@@ -66,9 +75,9 @@ impl Executor {
     // give the result of the cqe given the index we have.
     // how do I raise an error if I have a None here? Is the error going to be horrible unless we
     // return Option<Result<u32>> can we even get an error?
-    pub fn poll_for_completion(&mut self, job_id: u32) -> Result<u32> {
+    pub fn poll_for_completion(&mut self, job_id: u32) -> Option<i32> {
         // unknown error here
-        let result = self.results[job_id as usize].ok_or(Error)?;
+        let result = self.results[job_id as usize];
         self.results[job_id as usize] = None;
         result
     }

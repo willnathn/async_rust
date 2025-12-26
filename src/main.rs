@@ -1,6 +1,9 @@
+#![feature(thread_local)]
 mod executor;
-fn executor_loop() {}
+mod read_future;
+mod uring;
+use executor::Executor;
 fn main() {
-    let ring = uring::UringRing::new(1000);
+    let ring = Executor::new();
     println!("{:?}", ring)
 }

@@ -1,11 +1,10 @@
 use rustix::io::Errno;
-pub use rustix::io::Result;
 use rustix::io_uring::{
-    IORING_OFF_CQ_RING, IORING_OFF_SQ_RING, IORING_OFF_SQES, IoringEnterFlags, io_cqring_offsets,
-    io_sqring_offsets, io_uring_enter, io_uring_params, io_uring_setup,
+    io_cqring_offsets, io_sqring_offsets, io_uring_enter, io_uring_params, io_uring_setup,
+    IoringEnterFlags, IORING_OFF_CQ_RING, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
-pub use rustix::io_uring::{io_uring_cqe, io_uring_sqe};
-use rustix::mm::{MapFlags, ProtFlags, mmap, munmap};
+pub use rustix::io_uring::{io_uring_cqe, io_uring_ptr, io_uring_sqe, IoringOp};
+use rustix::mm::{mmap, munmap, MapFlags, ProtFlags};
 use std::ffi::c_void;
 use std::fmt;
 use std::mem::size_of;
@@ -159,7 +158,7 @@ impl UringRing {
             *self.sq_ring_entries - (self.sq_tail.read_volatile() - self.sq_head.read_volatile())
         }
     }
-    fn enqueue_sqe(&mut self, sqe: io_uring_sqe) -> Result<(), UringError> {
+    pub fn enqueue_sqe(&mut self, sqe: io_uring_sqe) -> Result<(), UringError> {
         if self.sq_space_left() == 0 {
             return Err(UringError::QueueFull);
         }
@@ -173,14 +172,14 @@ impl UringRing {
         Ok(())
     }
 
-    fn submit(&mut self) -> Result<usize, UringError> {
+    pub fn submit(&mut self) -> Result<usize, UringError> {
         // we only want to call this after a fair few sqe events, otherwise what is the point.
         unsafe { Ok(io_uring_enter(self.fd.as_fd(), 0, 0, IoringEnterFlags::empty())? as usize) }
     }
 
     // combine the peek and advance of cqe as for our use case we want them together. Maybe get an
     // iterator here? What is the point though.
-    fn get_cqe_batch(&self) -> Result<Vec<io_uring_cqe>, UringError> {
+    pub fn get_cqe_batch(&self) -> Result<Vec<io_uring_cqe>, UringError> {
         let ready_count = self.cq_ready();
         // will this save CPU compared to following along an empty vec?
         if ready_count == 0 {

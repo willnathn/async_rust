@@ -6,39 +6,23 @@ use rustix::io_uring::{
 pub use rustix::io_uring::{io_uring_cqe, io_uring_ptr, io_uring_sqe, IoringOp};
 use rustix::mm::{mmap, munmap, MapFlags, ProtFlags};
 use std::ffi::c_void;
-use std::fmt;
 use std::mem::size_of;
 use std::os::fd::{AsFd, OwnedFd};
 use std::ptr;
+use thiserror::Error;
 
 // the point is to add to a user space queue, use 1 syscall to start processing on all and then
 // read ready ones in batches. This eventually will become an internal to a UringRing which wraps
 // _some_ syscalls and be pub(crate).
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum UringError {
+    #[error("Submission queue is full")]
     QueueFull,
+    #[error("No completions available")]
     NoCompletions,
-    IoError(rustix::io::Errno),
-}
-
-impl fmt::Display for UringError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            UringError::QueueFull => write!(f, "Submission queue is full"),
-            UringError::NoCompletions => write!(f, "No completions available"),
-            UringError::IoError(e) => write!(f, "IO error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for UringError {}
-
-// Convert io::Error to UringError automatically
-impl From<rustix::io::Errno> for UringError {
-    fn from(err: rustix::io::Errno) -> Self {
-        UringError::IoError(err)
-    }
+    #[error("IO error: {0}")]
+    IoError(#[from] rustix::io::Errno),
 }
 
 #[derive(Debug)]
@@ -58,7 +42,7 @@ pub struct UringRing {
     cq_ring_entries: *const u32,
     cq_overflow: *const u32,
     cqes: *const io_uring_cqe,
-    // for dropping
+    // for dropping - if we leak this is it a speed up?
     sq_ptr: *mut u8,
     sqe_ptr: *mut u8,
     cq_ptr: *mut u8,

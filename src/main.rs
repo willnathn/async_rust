@@ -1,9 +1,9 @@
 #![feature(thread_local)]
-mod executor;
+mod reactor;
 mod read_future;
 mod uring;
-use executor::Executor;
+use reactor::Reactor;
 fn main() {
-    let ring = Executor::new();
+    let ring = Reactor::new();
     println!("{:?}", ring)
 }

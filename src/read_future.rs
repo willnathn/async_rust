@@ -1,4 +1,4 @@
-use crate::executor::get_local_executor;
+use crate::reactor::{get_local_reactor, Reactor, ReactorError};
 use crate::uring::{io_uring_ptr, io_uring_sqe, IoringOp, UringError};
 use std::ffi::c_void;
 use std::future::Future;
@@ -10,9 +10,10 @@ pub struct ReadFuture {
     fd: OwnedFd,
     buf: Box<[u8]>,
     offset: u64,
-    job_id: Option<u32>,
+    job_id: Option<usize>,
 }
 
+// how does ownershup work? Since I own the fd noone can do another operation at the same time?
 impl ReadFuture {
     pub fn new(fd: OwnedFd, offset: u64, size: usize) -> Self {
         ReadFuture {
@@ -35,23 +36,25 @@ impl ReadFuture {
         sqe
     }
 
-    fn process_result(&self, res: i32) -> Result<usize, UringError> {
+    fn process_result(&mut self, res: i32) -> Result<Vec<u8>, ReactorError> {
         if res < 0 {
-            return Err(UringError::IoError(rustix::io::Errno::from_raw_os_error(
-                -res,
-            )));
+            return Err(UringError::IoError(rustix::io::Errno::from_raw_os_error(-res)).into());
         }
-        Ok(res as usize)
+        let bytes_read = res as usize;
+        let buf = std::mem::take(&mut self.buf);
+        let mut vec = buf.into_vec();
+        vec.truncate(bytes_read);
+        Ok(vec)
     }
 }
 
 impl Future for ReadFuture {
-    type Output = Result<usize, UringError>; // ← Returns bytes read, not buffer
+    type Output = Result<Vec<u8>, ReactorError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        let ex = get_local_reactor();
         match self.job_id {
             Some(job_id) => {
-                let ex = unsafe { get_local_executor() };
                 match ex.poll_for_completion(job_id) {
                     Some(res) => {
                         // todo: turn i32 -> Result
@@ -61,9 +64,8 @@ impl Future for ReadFuture {
                 };
             }
             None => {
-                let ex = unsafe { get_local_executor() };
                 let sqe = self.make_sqe();
-                self.job_id = Some(ex.enqueue_sqe(sqe, cx.waker().clone())?);
+                self.job_id = Some(ex.enqueue_sqe(sqe)?);
                 Poll::Pending
             }
         }

@@ -41,19 +41,37 @@ const MAX_CONCURRENT_SQES: u32 = 1024;
 // this will need tuning, how many tasks can we be waiting on?
 const MAX_PENDING_TASKS: u32 = 2048;
 
+#[derive(Debug, Clone, Copy)]
+pub struct ReactorJobHandle {
+    index: usize,
+}
+impl ReactorJobHandle {
+    pub fn index(&self) -> usize {
+        self.index
+    }
+    pub fn new(index: usize) -> Self {
+        ReactorJobHandle { index }
+    }
+}
+
+//TODO: we don't have to store wakers here, and it may be more efficient to just read the
+//reactor.ready_jobs and call wake() in a loop in the Executor, but at some point we need to call
+//waker.wake().
 #[derive(Debug)]
 pub struct Reactor {
     uring: UringRing,
     results: [Option<i32>; MAX_PENDING_TASKS as usize],
-    free_job_ids: Vec<usize>,
-    ready_jobs: Vec<usize>,
+    free_job_ids: Vec<ReactorJobHandle>,
+    ready_jobs: Vec<ReactorJobHandle>,
 }
 
 impl Reactor {
     pub fn new() -> Result<Self, UringError> {
         Ok(Reactor {
             results: [None; MAX_PENDING_TASKS as usize],
-            free_job_ids: (0..MAX_PENDING_TASKS as usize).collect(),
+            free_job_ids: (0..MAX_PENDING_TASKS as usize)
+                .map(ReactorJobHandle::new)
+                .collect(),
             uring: UringRing::new(MAX_CONCURRENT_SQES)?,
             ready_jobs: Vec::with_capacity(MAX_PENDING_TASKS as usize),
         })
@@ -66,15 +84,15 @@ impl Reactor {
 
     // returns a usize index to the results and tasks parallel arrays.
     #[inline]
-    pub fn get_new_job_id(&mut self) -> Result<usize, ReactorError> {
+    pub fn get_new_job_id(&mut self) -> Result<ReactorJobHandle, ReactorError> {
         self.free_job_ids
             .pop()
             .ok_or(ReactorError::NoPendingTaskSpace)
     }
-    pub fn enqueue_sqe(&mut self, mut sqe: io_uring_sqe) -> Result<usize, ReactorError> {
+    pub fn enqueue_sqe(&mut self, mut sqe: io_uring_sqe) -> Result<ReactorJobHandle, ReactorError> {
         // how do we register the future in tasks here?
         let job_id = self.get_new_job_id()?;
-        sqe.user_data.u64_ = job_id as u64;
+        sqe.user_data.u64_ = job_id.index() as u64;
         // could check pending is None here?
         self.uring.enqueue_sqe(sqe)?;
         Ok(job_id)
@@ -89,7 +107,7 @@ impl Reactor {
             self.results[index] = Some(cqe.res);
             // tell thread it can poll - instead of the overhead of a vtable for waker.wake lets just push to the
             // ready queue and whatever is running the loop can just poll these.
-            self.ready_jobs.push(index);
+            self.ready_jobs.push(ReactorJobHandle { index });
         }
         Ok(())
     }
@@ -97,10 +115,10 @@ impl Reactor {
     // give the result of the cqe given the index we have.
     // how do I raise an error if I have a None here? Is the error going to be horrible unless we
     // return Option<Result<u32>> can we even get an error?
-    pub fn poll_for_completion(&mut self, job_id: usize) -> Option<i32> {
+    pub fn poll_for_completion(&mut self, job_id: ReactorJobHandle) -> Option<i32> {
         // unknown error here
-        let result = self.results[job_id as usize];
-        self.results[job_id as usize] = None;
+        let result = self.results[job_id.index()];
+        self.results[job_id.index()] = None;
         self.free_job_ids.push(job_id);
         result
     }

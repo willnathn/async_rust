@@ -1,18 +1,18 @@
 use crate::futures::IoFuture;
 use crate::reactor::{ReactorError, ReactorJobHandle};
-use crate::uring::{io_uring_sqe, IoringOp, UringError};
+use crate::uring::{IoringOp, UringError, io_uring_sqe};
+use rustix::fd::RawFd;
 use std::ffi::c_void;
-use std::os::fd::{AsRawFd, OwnedFd};
 
 pub struct ReadFuture {
-    fd: OwnedFd,
+    fd: RawFd,
     buf: Box<[u8]>,
     offset: u64,
     job_id: Option<ReactorJobHandle>,
 }
 
 impl ReadFuture {
-    pub fn new(fd: OwnedFd, offset: u64, size: usize) -> Self {
+    pub fn new(fd: RawFd, offset: u64, size: usize) -> Self {
         ReadFuture {
             fd,
             buf: vec![0u8; size].into_boxed_slice(),
@@ -26,7 +26,7 @@ impl IoFuture<Vec<u8>> for ReadFuture {
     fn make_sqe(&self) -> io_uring_sqe {
         let mut sqe: io_uring_sqe = unsafe { std::mem::zeroed() };
         sqe.opcode = IoringOp::Read;
-        sqe.fd = self.fd.as_raw_fd();
+        sqe.fd = self.fd;
         sqe.addr_or_splice_off_in.addr.ptr = self.buf.as_ptr() as *mut c_void;
         sqe.len.len = self.buf.len() as u32;
         sqe.off_or_addr2.off = self.offset;
@@ -52,3 +52,5 @@ impl IoFuture<Vec<u8>> for ReadFuture {
         Ok(vec)
     }
 }
+
+impl_io_future!(ReadFuture => Vec<u8>);

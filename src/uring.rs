@@ -1,14 +1,14 @@
 use rustix::io::Errno;
 use rustix::io_uring::{
-    io_cqring_offsets, io_sqring_offsets, io_uring_enter, io_uring_params, io_uring_setup,
-    IoringEnterFlags, IORING_OFF_CQ_RING, IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    IORING_OFF_CQ_RING, IORING_OFF_SQ_RING, IORING_OFF_SQES, IoringEnterFlags, io_cqring_offsets,
+    io_sqring_offsets, io_uring_enter, io_uring_params, io_uring_setup,
 };
-pub use rustix::io_uring::{io_uring_cqe, io_uring_ptr, io_uring_sqe, IoringOp};
-use rustix::mm::{mmap, munmap, MapFlags, ProtFlags};
+pub use rustix::io_uring::{IoringOp, io_uring_cqe, io_uring_ptr, io_uring_sqe};
+use rustix::mm::{MapFlags, ProtFlags, mmap, munmap};
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::os::fd::{AsFd, OwnedFd};
-use std::ptr;
+use std::{ptr, u32};
 use thiserror::Error;
 
 // the point is to add to a user space queue, use 1 syscall to start processing on all and then
@@ -142,6 +142,7 @@ impl UringRing {
             *self.sq_ring_entries - (self.sq_tail.read_volatile() - self.sq_head.read_volatile())
         }
     }
+
     pub fn enqueue_sqe(&mut self, sqe: io_uring_sqe) -> Result<(), UringError> {
         if self.sq_space_left() == 0 {
             return Err(UringError::QueueFull);
@@ -151,23 +152,23 @@ impl UringRing {
         let sqe_ptr = unsafe { &mut *self.sqes.add(i as usize) };
         *sqe_ptr = sqe;
         unsafe { self.sq_array.add(i as usize).write_volatile(i) };
-        // this could have race conditions no?
         unsafe { self.sq_tail.write_volatile(tail + 1) };
+
         Ok(())
     }
 
     pub fn submit(&mut self) -> Result<usize, UringError> {
-        // we only want to call this after a fair few sqe events, otherwise what is the point.
-        unsafe { Ok(io_uring_enter(self.fd.as_fd(), 0, 0, IoringEnterFlags::empty())? as usize) }
+        unsafe {
+            Ok(io_uring_enter(self.fd.as_fd(), u32::MAX, 1, IoringEnterFlags::GETEVENTS)? as usize)
+        }
     }
 
     // combine the peek and advance of cqe as for our use case we want them together. Maybe get an
     // iterator here? What is the point though.
     pub fn get_cqe_batch(&self) -> Result<Vec<io_uring_cqe>, UringError> {
         let ready_count = self.cq_ready();
-        // will this save CPU compared to following along an empty vec?
         if ready_count == 0 {
-            return Err(UringError::NoCompletions);
+            return Ok(Vec::new());
         }
         let head = unsafe { self.cq_head.read_volatile() };
         let mask = unsafe { *self.cq_ring_mask };

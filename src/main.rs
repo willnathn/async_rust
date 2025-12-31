@@ -5,10 +5,13 @@ mod reactor;
 mod uring;
 mod waker;
 
+use std::os::fd::AsRawFd;
+
 use executor::{get_local_executor, make_executor};
+use futures::read::ReadFuture;
+use rustix::fs::{CWD, Mode, OFlags};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    impl_io_future!(String=>Vec<u8>);
     unsafe {
         make_executor()?;
     }
@@ -16,7 +19,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ex = unsafe { get_local_executor() };
 
     ex.spawn_task(Box::pin(async {
-        println!("Hello from async task!");
+        let fd = rustix::fs::openat(
+            CWD,
+            "tmp.txt",
+            OFlags::WRONLY | OFlags::TRUNC,
+            Mode::from_raw_mode(0o644),
+        )
+        .expect("open for testing, haven't handled");
+        println!(
+            "{}",
+            String::from_utf8(ReadFuture::new(fd.as_raw_fd(), 0, 1000).await.unwrap()).unwrap()
+        )
     }))?;
 
     ex.run()?;

@@ -13,8 +13,7 @@ pub enum ReactorError {
     #[error("Uring error: {0}")]
     UringError(#[from] UringError),
 }
-// we don't care about this leaking for now. Currently your executor is unchangeable anyway. Why can't we borrow mutably?
-// change the state for anything to work.
+// we don't care about this leaking for now. Currently your reactor is unchangeable anyway. Why can't we borrow mutably? We should probably use some form of scope (by default global), in case for some weird reason you want to run a web server and then stop and do something else.
 #[thread_local]
 static mut LOCAL_REACTOR: *mut Reactor = std::ptr::null_mut();
 
@@ -59,7 +58,6 @@ pub struct Reactor {
     results: [Option<i32>; MAX_PENDING_TASKS as usize],
     free_job_ids: Vec<ReactorJobHandle>,
     wakers: [Option<Waker>; MAX_PENDING_TASKS as usize],
-    ready_tasks: Vec<TaskHandle>,
 }
 
 impl Reactor {
@@ -70,7 +68,6 @@ impl Reactor {
                 .map(ReactorJobHandle::new)
                 .collect(),
             wakers: [const { None }; MAX_PENDING_TASKS as usize],
-            ready_tasks: Vec::new(),
             uring: UringRing::new(MAX_CONCURRENT_SQES)?,
         })
     }
@@ -92,7 +89,6 @@ impl Reactor {
         mut sqe: io_uring_sqe,
         waker: Waker,
     ) -> Result<ReactorJobHandle, ReactorError> {
-        //TODO: need to register the waker somewhere!
         let job_id = self.get_new_job_id()?;
         sqe.user_data.u64_ = job_id.index() as u64;
         // could check pending is None here?
@@ -111,7 +107,6 @@ impl Reactor {
             self.wakers[index]
                 .take()
                 .expect(&format!("Expected Some got None for waker at {:?}", index))
-                .clone()
                 .wake();
         }
         Ok(())

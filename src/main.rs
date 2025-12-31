@@ -19,13 +19,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ex = unsafe { get_local_executor() };
 
     ex.spawn_task(Box::pin(async {
-        let fd = rustix::fs::openat(
-            CWD,
-            "tmp.txt",
-            OFlags::WRONLY | OFlags::TRUNC,
-            Mode::from_raw_mode(0o644),
-        )
-        .expect("open for testing, haven't handled");
+        let fd = rustix::fs::openat(CWD, "tmp.txt", OFlags::RDONLY, Mode::from_raw_mode(0o644))
+            .expect("open for testing, haven't handled");
         println!(
             "{}",
             String::from_utf8(ReadFuture::new(fd.as_raw_fd(), 0, 1000).await.unwrap()).unwrap()

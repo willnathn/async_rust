@@ -3,10 +3,23 @@ mod executor;
 mod futures;
 mod reactor;
 mod uring;
-use executor::Executor;
-use futures::ReadFuture;
-use reactor::Reactor;
-fn main() {
-    let ring = Reactor::new();
-    println!("{:?}", ring)
+mod waker;
+
+use executor::{get_local_executor, make_executor};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    unsafe {
+        make_executor()?;
+    }
+
+    let ex = unsafe { get_local_executor() };
+
+    ex.spawn_task(Box::pin(async {
+        println!("Hello from async task!");
+    }))?;
+
+    ex.run()?;
+
+    println!("Executor finished");
+    Ok(())
 }

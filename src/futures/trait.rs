@@ -11,6 +11,15 @@ pub trait IoFuture<T> {
     fn process_result(&mut self, res: i32) -> Result<T, ReactorError>;
 }
 
+// due to orphan rule (must have created type or trait in this crate) I can't impl Future just
+// because IoFuture is implemented. Let's use a macro instead.
+
+#[macro_export]
+macro_rules! {
+    () => {
+
+    };
+}
 impl<T, F> Future for F
 where
     F: IoFuture<T>,
@@ -20,17 +29,13 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let ex = get_local_reactor();
         match self.job_id() {
-            Some(job_id) => {
-                match ex.poll_for_completion(job_id) {
-                    Some(res) => {
-                        // todo: turn i32 -> Result maybe?
-                        return Poll::Ready(self.process_result(res));
-                    }
-                    None => return Poll::Pending,
-                };
-            }
+            Some(job_id) => return Poll::Ready(self.process_result(ex.get_result(job_id))),
             None => {
                 let sqe = self.make_sqe();
+                let task_id = unsafe {
+                    let executor = crate::executor::get_local_executor();
+                    executor.ready_tasks.last().copied().unwrap()
+                };
                 self.set_job_id(ex.enqueue_sqe(sqe)?);
                 Poll::Pending
             }

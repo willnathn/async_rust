@@ -1,8 +1,5 @@
-// io_uring futures register their job here, call enqueue_sqe to get their job it and then can poll the job
-// id. Executors can use the ready_jobs ids to find which tasks need to wake and call submit
-// whenever ready.
-
 use crate::uring::{io_uring_sqe, UringError, UringRing};
+use crate::waker::TaskWaker;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -54,26 +51,23 @@ impl ReactorJobHandle {
     }
 }
 
-//TODO: we don't have to store wakers here, and it may be more efficient to just read the
-//reactor.ready_jobs and call wake() in a loop in the Executor, but at some point we need to call
-//waker.wake().
 #[derive(Debug)]
 pub struct Reactor {
     uring: UringRing,
     results: [Option<i32>; MAX_PENDING_TASKS as usize],
+    wakers: [Option<TaskWaker>; MAX_PENDING_TASKS as usize],
     free_job_ids: Vec<ReactorJobHandle>,
-    ready_jobs: Vec<ReactorJobHandle>,
 }
 
 impl Reactor {
-    pub fn new() -> Result<Self, UringError> {
+    pub fn new() -> Result<Self, ReactorError> {
         Ok(Reactor {
             results: [None; MAX_PENDING_TASKS as usize],
+            wakers: [const { None }; MAX_PENDING_TASKS as usize],
             free_job_ids: (0..MAX_PENDING_TASKS as usize)
                 .map(ReactorJobHandle::new)
                 .collect(),
             uring: UringRing::new(MAX_CONCURRENT_SQES)?,
-            ready_jobs: Vec::with_capacity(MAX_PENDING_TASKS as usize),
         })
     }
 }
@@ -99,27 +93,32 @@ impl Reactor {
     }
     // here we will want to get the cqes, extract the user data to find the queued task and then
     // handle them by marking ready for next round.
-    pub fn get_completions(&mut self) -> Result<(), UringError> {
+    pub fn get_completions(&mut self) -> Result<(), ReactorError> {
         let cqes = self.uring.get_cqe_batch()?;
         for cqe in cqes {
             let index = unsafe { cqe.user_data.u64_ } as usize;
             // if none we raise an error here
             self.results[index] = Some(cqe.res);
-            // tell thread it can poll - instead of the overhead of a vtable for waker.wake lets just push to the
-            // ready queue and whatever is running the loop can just poll these.
-            self.ready_jobs.push(ReactorJobHandle { index });
+            self.wakers[index]
+                .expect(&format!("Expected Some got None for waker at {:?}", index))
+                .wake()
         }
         Ok(())
     }
 
     // give the result of the cqe given the index we have.
-    // how do I raise an error if I have a None here? Is the error going to be horrible unless we
-    // return Option<Result<u32>> can we even get an error?
-    pub fn poll_for_completion(&mut self, job_id: ReactorJobHandle) -> Option<i32> {
-        // unknown error here
-        let result = self.results[job_id.index()];
+    // this is just dropping a handle - maybe it should be tied to lifetimes
+    // doesn't return a result as we know that result is Some by
+    pub fn get_result(&mut self, job_id: ReactorJobHandle) -> i32 {
+        let result = self.results[job_id.index()]
+            .expect(&format!("Got a none for {:?} but expected Some", job_id));
         self.results[job_id.index()] = None;
+        self.wakers[job_id.index()] = None;
         self.free_job_ids.push(job_id);
         result
+    }
+
+    pub fn submit(&mut self) -> Result<usize, ReactorError> {
+        Ok(self.uring.submit()?)
     }
 }

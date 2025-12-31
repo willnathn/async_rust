@@ -8,6 +8,7 @@ mod waker;
 use executor::{get_local_executor, make_executor};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    impl_io_future!(String=>Vec<u8>);
     unsafe {
         make_executor()?;
     }

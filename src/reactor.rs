@@ -1,6 +1,8 @@
 use crate::uring::{io_uring_sqe, UringError, UringRing};
 use crate::waker::TaskWaker;
 use thiserror::Error;
+use std::sync::Arc;
+use std::task::Wake;
 
 #[derive(Debug, Error)]
 pub enum ReactorError {
@@ -99,9 +101,9 @@ impl Reactor {
             let index = unsafe { cqe.user_data.u64_ } as usize;
             // if none we raise an error here
             self.results[index] = Some(cqe.res);
-            self.wakers[index]
+            Arc::new(self.wakers[index].take()
                 .expect(&format!("Expected Some got None for waker at {:?}", index))
-                .wake()
+            ).wake();
         }
         Ok(())
     }

@@ -172,19 +172,17 @@ impl Executor {
             while let Some(task_handle) = self.ready_tasks.pop() {
                 let index = task_handle.index();
 
-                if let (Some(ref mut future), Some(ref waker)) =
-                    (&mut self.futures[index], &self.wakers[index])
-                {
-                    let mut cx = Context::from_waker(waker);
+                let future = self.futures[index].as_mut().expect("future should exist for ready task");
+                let waker = self.wakers[index].as_mut().expect("waker should exist for ready task");
+                let mut cx = Context::from_waker(waker);
 
-                    match future.as_mut().poll(&mut cx) {
-                        Poll::Ready(()) => {
-                            self.futures[index] = None;
-                            self.wakers[index] = None;
-                            self.free_handles.push(task_handle);
-                        }
-                        Poll::Pending => {}
+                match future.as_mut().poll(&mut cx) {
+                    Poll::Ready(()) => {
+                        self.futures[index] = None;
+                        self.wakers[index] = None;
+                        self.free_handles.push(task_handle);
                     }
+                    Poll::Pending => {}
                 }
             }
 

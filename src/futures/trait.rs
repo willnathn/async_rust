@@ -15,30 +15,25 @@ pub trait IoFuture<T> {
 // because IoFuture is implemented. Let's use a macro instead.
 
 #[macro_export]
-macro_rules! {
-    () => {
+macro_rules! impl_io_future {
+    impl std::future::Future for $type {
 
-    };
-}
-impl<T, F> Future for F
-where
-    F: IoFuture<T>,
-{
-    type Output = Result<T, ReactorError>;
+        type Output = Result<$output, ReactorError>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        let ex = get_local_reactor();
-        match self.job_id() {
-            Some(job_id) => return Poll::Ready(self.process_result(ex.get_result(job_id))),
-            None => {
-                let sqe = self.make_sqe();
-                let task_id = unsafe {
-                    let executor = crate::executor::get_local_executor();
-                    executor.ready_tasks.last().copied().unwrap()
-                };
-                self.set_job_id(ex.enqueue_sqe(sqe)?);
-                Poll::Pending
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+            let reactor = get_local_reactor();
+            match self.job_id() {
+                Some(job_id) => return Poll::Ready(self.process_result(ex.get_result(job_id))),
+                None => {
+                    let sqe = self.make_sqe();
+                    let task_id = unsafe {
+                        let executor = crate::executor::get_local_executor();
+                        executor.ready_tasks.last().copied().unwrap()
+                    };
+                    self.set_job_id(ex.enqueue_sqe(sqe)?);
+                    Poll::Pending
+                }
             }
         }
-    }
+}
 }
